@@ -40,7 +40,7 @@ extension PCMContainer {
         margin: Float = 1
     ) async -> HPSS {
         precondition(self.channelCount == 1, "Only mono audio is supported")
-        
+
         let resolvedFFT = max(2, nFFT)
         let resolvedHop = max(1, hopLength)
         let harmonicKernel = resolvedKernelSize(harmonicKernelSize)
@@ -121,8 +121,8 @@ extension PCMContainer {
             frame += 1
         }
 
-        let harmonic = MultiArray<Float>.zeros(frequencyBins, frameCount)
-        let percussive = MultiArray<Float>.zeros(frequencyBins, frameCount)
+        let harmonic = MultiArray<Float>.zeros(frequencyBins, frameCount, 2)
+        let percussive = MultiArray<Float>.zeros(frequencyBins, frameCount, 2)
         let epsilon: Float = 1e-8
 
         bin = 0
@@ -137,8 +137,13 @@ extension PCMContainer {
                 let hMask = hScore / (hScore + resolvedMargin * pScore + epsilon)
                 let pMask = pScore / (pScore + resolvedMargin * hScore + epsilon)
 
-                harmonic[bin, frame] = magnitude[bin, frame] * hMask
-                percussive[bin, frame] = magnitude[bin, frame] * pMask
+                let real = spectrum[bin, frame, 0]
+                let imag = spectrum[bin, frame, 1]
+
+                harmonic[bin, frame, 0] = real * hMask
+                harmonic[bin, frame, 1] = imag * hMask
+                percussive[bin, frame, 0] = real * pMask
+                percussive[bin, frame, 1] = imag * pMask
                 frame += 1
             }
             bin += 1
@@ -148,17 +153,18 @@ extension PCMContainer {
             harmonic: harmonic,
             percussive: percussive,
             hopLength: resolvedHop,
-            nFFT: resolvedFFT
+            nFFT: resolvedFFT,
+            sampleRate: self.sampleRate
         )
     }
 
     /// Harmonic and percussive STFT magnitude components.
     public struct HPSS: Sendable {
 
-        /// Harmonic magnitude spectrogram with shape `frequencyBins × frameCount`.
+        /// Harmonic complex spectrogram with shape `frequencyBins × frameCount`.
         public let harmonic: MultiArray<Float>
 
-        /// Percussive magnitude spectrogram with shape `frequencyBins × frameCount`.
+        /// Percussive complex spectrogram with shape `frequencyBins × frameCount`.
         public let percussive: MultiArray<Float>
 
         /// STFT hop length used to produce frames, in samples.
@@ -166,31 +172,58 @@ extension PCMContainer {
 
         /// FFT size used to compute STFT.
         public let nFFT: Int
-
-        /// Number of spectrogram frames.
-        @inlinable
-        public var frameCount: Int {
-            harmonic.shape.count >= 2 ? harmonic.shape[1] : 0
-        }
-
-        /// Number of frequency bins.
-        @inlinable
-        public var frequencyBinCount: Int {
-            harmonic.shape.first ?? 0
-        }
+        
+        private let sampleRate: Double
 
         /// Creates an HPSS container.
-        @inlinable
         public init(
             harmonic: MultiArray<Float>,
             percussive: MultiArray<Float>,
             hopLength: Int,
-            nFFT: Int
+            nFFT: Int,
+            sampleRate: Double
         ) {
             self.harmonic = harmonic
             self.percussive = percussive
             self.hopLength = hopLength
             self.nFFT = nFFT
+            self.sampleRate = sampleRate
+        }
+
+        /// Reconstructs the harmonic waveform as a mono `PCMContainer`.
+        public func reconstruct(_ keyPath: KeyPath<Self, MultiArray<Float>>) -> PCMContainer {
+            let spectrum = self[keyPath: keyPath]
+            
+            let istft = InverseShortTimeFourierTransform(n_fft: self.nFFT, hop: self.hopLength, center: true)
+            var samples = istft(spectrum)
+            let content = MultiArray<Float>.zeros(1, samples.count)
+            memcpy(content.baseAddress, &samples, samples.count * MemoryLayout<Float>.stride)
+            
+            return PCMContainer(content: content, sampleRate: self.sampleRate)
+        }
+
+        /// Returns the magnitude spectrogram for the selected component.
+        public func magnitude(of keyPath: KeyPath<Self, MultiArray<Float>>) -> MultiArray<Float> {
+            let spectrum = self[keyPath: keyPath]
+            assert(spectrum.shape.count == 3)
+
+            let frequencyBins = spectrum.shape[0]
+            let frameCount = spectrum.shape[1]
+            let magnitude = MultiArray<Float>.zeros(frequencyBins, frameCount)
+
+            var bin = 0
+            while bin < frequencyBins {
+                var frame = 0
+                while frame < frameCount {
+                    let real = spectrum[bin, frame, 0]
+                    let imag = spectrum[bin, frame, 1]
+                    magnitude[bin, frame] = hypotf(real, imag)
+                    frame += 1
+                }
+                bin += 1
+            }
+
+            return magnitude
         }
     }
 
@@ -207,10 +240,10 @@ private func resolvedKernelSize(_ kernelSize: Int) -> Int {
 /// Computes the median value of a mutable sample window.
 private func median(of values: inout [Float]) -> Float {
     guard !values.isEmpty else { return 0 }
-    
+
     values.sort()
     let middle = values.count / 2
-    
+
     if values.count.isMultiple(of: 2) {
         return (values[middle - 1] + values[middle]) * 0.5
     } else {

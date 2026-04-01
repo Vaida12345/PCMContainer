@@ -17,6 +17,6 @@ struct ChromaTests {
     @Test func increment() async throws {
         let source = FinderItem(at: "/Users/vaida/DataBase/Swift Package/Test Reference/MediaKit/increment.m4a")
         let chroma = try await source.load(.pcm).mono().chroma()
-        Attachment.record(NSImage(cgImage: chroma.values.rendered()!, size: .zero))
+        Attachment.record(chroma.values.rendered()!)
     }
 }
