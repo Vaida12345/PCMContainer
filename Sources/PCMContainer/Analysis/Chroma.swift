@@ -138,10 +138,10 @@ extension PCMContainer.Chroma {
     @inlinable
     public func convert(time: Double, to space: TimeSpace) -> Double {
         switch space {
-        case .seconds:
-            time / secondsPerFrame
-        case .frames:
+        case .seconds: // self is frames
             time * secondsPerFrame
+        case .frames: // self is seconds
+            time / secondsPerFrame
         }
     }
     

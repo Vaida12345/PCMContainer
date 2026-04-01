@@ -71,7 +71,9 @@ extension PCMContainer.Chroma {
         }
         
         public enum FrameSpace: Sendable {
+            /// reference sequence (`self`), aka `lhs`.
             case reference
+            /// query sequence (`other`), aka `rhs`.
             case query
         }
         
