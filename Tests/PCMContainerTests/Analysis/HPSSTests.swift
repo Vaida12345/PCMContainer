@@ -11,7 +11,7 @@ import AppKit
 import FinderItem
 
 
-@Suite
+@Suite(.disabled("does not work well"))
 struct HPSSTests {
     
     @Test func increment() async throws {

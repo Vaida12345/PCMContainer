@@ -1,3 +1,10 @@
+//
+//  Chroma.swift
+//  MediaKit
+//
+//  Created by Vaida on 2026-04-01.
+//
+
 import AVFoundation
 import MultiArray
 
@@ -74,7 +81,7 @@ extension PCMContainer {
             frame += 1
         }
 
-        return Chroma(values: chroma, hopLength: hopLength)
+        return Chroma(values: chroma, hopLength: hopLength, sampleRate: self.sampleRate)
     }
 
     /// Frame-wise chroma (HPCP-like) features with 12 pitch classes per frame.
@@ -88,10 +95,19 @@ extension PCMContainer {
         /// STFT hop length used to produce frames, in samples.
         public let hopLength: Int
 
+        /// Sampling rate of the source audio, in Hz.
+        public let sampleRate: Double
+
         /// Number of chroma frames.
         @inlinable
         public var frameCount: Int {
             values.shape.first ?? 0
+        }
+
+        /// Duration of one chroma frame, in seconds.
+        @inlinable
+        var secondsPerFrame: Double {
+            Double(hopLength) / sampleRate
         }
 
         /// Creates a chroma container.
@@ -99,13 +115,36 @@ extension PCMContainer {
         /// - Parameters:
         ///   - values: Chroma matrix of shape `frameCount × 12`.
         ///   - hopLength: Hop length used during analysis, in samples.
+        ///   - sampleRate: Sampling rate of the source audio, in hertz.
         @inlinable
-        public init(values: MultiArray<Float>, hopLength: Int) {
+        init(values: MultiArray<Float>, hopLength: Int, sampleRate: Double) {
+            assert(hopLength > 0, "hopLength must be positive")
+            assert(sampleRate > 0, "sampleRate must be positive")
+            
             self.values = values
             self.hopLength = hopLength
+            self.sampleRate = sampleRate
         }
     }
+}
 
+extension PCMContainer.Chroma {
+    
+    public enum TimeSpace: Sendable {
+        case seconds
+        case frames
+    }
+    
+    @inlinable
+    public func convert(time: Double, to space: TimeSpace) -> Double {
+        switch space {
+        case .seconds:
+            time / secondsPerFrame
+        case .frames:
+            time * secondsPerFrame
+        }
+    }
+    
 }
 
 /// Computes a non-negative modulo result in the range `[0, modulus)`.
