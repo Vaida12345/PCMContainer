@@ -26,10 +26,7 @@ extension PCMContainer {
         let nFFT = 4096
         let hopLength = 1024
 
-        let stft = ShortTimeFourierTransform(n_fft: nFFT, hop: hopLength, center: true)
-        let spectrum = stft(self.content)
-
-        assert(spectrum.shape.count == 3)
+        let spectrum = self.shortTimeFourierTransform(n_fft: nFFT, hop: hopLength).spectrum
 
         let frequencyBins = spectrum.shape[0]
         let frameCount = spectrum.shape[1]
