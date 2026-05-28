@@ -12,11 +12,12 @@ import FinderItem
 
 extension PCMContainer {
     
-    /// Error thrown by `init(from:)`.
+    /// Error thrown by `init(from:)` and `write(to:)`.
     public enum ReadError: Error {
         case assetReaderError
         case converterUnavailable
         case conversionFailed
+        case formatUnavailable
     }
     
     
@@ -36,10 +37,31 @@ extension PCMContainer {
     ) async throws {
         let inputFile = try AVAudioFile(forReading: source.url)
         let inFormat  = inputFile.processingFormat          // e.g. 48 kHz/2ch/float32
-        let outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                      sampleRate: sampleRate ?? inFormat.sampleRate,
-                                      channels: inFormat.channelCount,
-                                      interleaved: false)!
+        let resolvedSampleRate = sampleRate ?? inFormat.sampleRate
+        let channelCount = Int(inFormat.channelCount)
+
+        // AVAudioFormat(commonFormat:...) only supports 1 or 2 channels.
+        // Try non-interleaved first for straightforward per-channel memcpy,
+        // then interleaved; beyond stereo both return nil and we throw.
+        let useNonInterleaved: Bool
+        let outFormat: AVAudioFormat
+        if let nonInterleaved = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: resolvedSampleRate,
+            channels: inFormat.channelCount,
+            interleaved: false) {
+            useNonInterleaved = true
+            outFormat = nonInterleaved
+        } else if let interleaved = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: resolvedSampleRate,
+            channels: inFormat.channelCount,
+            interleaved: true) {
+            useNonInterleaved = false
+            outFormat = interleaved
+        } else {
+            throw ReadError.formatUnavailable
+        }
         
         // make the converter
         guard let converter = AVAudioConverter(from: inFormat, to: outFormat) else {
@@ -78,12 +100,25 @@ extension PCMContainer {
         
         // destBuffer now contains converted audio.
         let channelData = destBuffer.floatChannelData!
-        
-        let channelCount = Int(outFormat.channelCount)
         let frameCount = Int(destBuffer.frameLength)
         let result = MultiArray<Float>.allocate(channelCount, frameCount)
-        for channel in 0..<channelCount {
-            memcpy(result.sequence(at: [channel]).baseAddress!, channelData[channel], frameCount * MemoryLayout<Float>.stride)
+
+        if useNonInterleaved {
+            for channel in 0..<channelCount {
+                memcpy(result.sequence(at: [channel]).baseAddress!, channelData[channel], frameCount * MemoryLayout<Float>.stride)
+            }
+        } else {
+            let src = channelData[0]
+            var channel = 0
+            while channel < channelCount {
+                let dest = result.sequence(at: [channel]).baseAddress!
+                var frame = 0
+                while frame < frameCount {
+                    (dest + frame).initialize(to: src[frame &* channelCount &+ channel])
+                    frame &+= 1
+                }
+                channel &+= 1
+            }
         }
         
         self.content = result
@@ -92,20 +127,58 @@ extension PCMContainer {
     
     /// Writes `self` as a `wav` to destination.
     public func write(to destination: FinderItem) async throws {
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                   sampleRate: sampleRate,
-                                   channels: AVAudioChannelCount(self.channelCount),
-                                   interleaved: false)!
-        
-        let file = try AVAudioFile(forWriting: destination.url, settings: format.settings)
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(self.content.shape[1]))!
-        buffer.frameLength = buffer.frameCapacity
-        
-        let channelData = buffer.floatChannelData!
-        for channel in 0..<self.content.shape[0] {
-            memcpy(channelData[channel], self.content.sequence(at: [channel]).baseAddress!, Int(buffer.frameLength) * MemoryLayout<Float>.stride)
+        let channelCount = self.channelCount
+        let frameCount = self.content.shape[1]
+
+        // AVAudioFormat(commonFormat:...) only supports 1 or 2 channels.
+        // Try non-interleaved first for straightforward per-channel memcpy,
+        // then interleaved; beyond stereo both return nil and we throw.
+        let useNonInterleaved: Bool
+        let format: AVAudioFormat
+        if let nonInterleaved = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: AVAudioChannelCount(channelCount),
+            interleaved: false
+        ) {
+            useNonInterleaved = true
+            format = nonInterleaved
+        } else if let interleaved = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: AVAudioChannelCount(channelCount),
+            interleaved: true
+        ) {
+            useNonInterleaved = false
+            format = interleaved
+        } else {
+            throw ReadError.formatUnavailable
         }
-        
+
+        let file = try AVAudioFile(forWriting: destination.url, settings: format.settings)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount))!
+        buffer.frameLength = buffer.frameCapacity
+
+        let channelData = buffer.floatChannelData!
+        if useNonInterleaved {
+            for channel in 0..<channelCount {
+                memcpy(channelData[channel], self.content.sequence(at: [channel]).baseAddress!, frameCount * MemoryLayout<Float>.stride)
+            }
+        } else {
+            let dest = channelData[0]
+            let srcs = (0..<channelCount).map { self.content.sequence(at: [$0]).baseAddress! }
+            var frame = 0
+            while frame < frameCount {
+                let base = frame &* channelCount
+                var channel = 0
+                while channel < channelCount {
+                    (dest + (base &+ channel)).initialize(to: srcs[channel][frame])
+                    channel &+= 1
+                }
+                frame &+= 1
+            }
+        }
+
         try file.write(from: buffer)
     }
     

@@ -13,10 +13,13 @@ extension PCMContainer {
     /// - parameters:
     ///   - n_fft: aka `fft_size`, better frequency resolution, worse time localization.
     ///   - hop: how far you slide the window forward between frames, in samples.
+    ///
+    /// - precondition: self is mono.
     public func shortTimeFourierTransform(
         n_fft: Int = 4096,
         hop: Int = 1024
     ) -> STFT {
+        precondition(self.channelCount == 1)
         let stft = ShortTimeFourierTransform(n_fft: n_fft, hop: hop, center: true)
         let spectrum = stft(self.content)
         return STFT(n_fft: n_fft, hop: hop, spectrum: spectrum)

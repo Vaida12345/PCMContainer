@@ -319,10 +319,10 @@ extension PCMContainer.Chroma.DTWResult: DetailedStringConvertible {
     
     public func detailedDescription(using descriptor: DetailedDescription.Descriptor<PCMContainer.Chroma.DTWResult>) -> any DescriptionBlockProtocol {
         descriptor.container {
-            descriptor.constant("distance: \(self.distance) (normalized: \(self.normalizedDistance))")
+            descriptor.raw("distance: \(self.distance) (normalized: \(self.normalizedDistance))")
             descriptor.container("path") {
                 descriptor.forEach(self.path) { point in
-                    descriptor.constant("\(point.reference) -> \(point.query)")
+                    descriptor.raw("\(point.reference) -> \(point.query)")
                 }
             }
         }
