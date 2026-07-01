@@ -166,6 +166,53 @@ struct PCMContainerIOTests {
 
     // MARK: - Output formats
 
+    /// Verifies that AAC decoder priming and padding trims do not shift decoded transients.
+    @Test("AAC decode aligns transient with WAV")
+    func aacDecodeAlignsTransientWithWAV() async throws {
+        let sampleRate = 44_100.0
+        let channelCount = 2
+        let frameCount = 12_000
+        let transientFrame = 4_096
+        let content = MultiArray<Float>.zeros(channelCount, frameCount)
+        for channel in 0..<channelCount {
+            content[channel, transientFrame] = channel == 0 ? 1.0 : 0.75
+        }
+        let original = PCMContainer(content: content, sampleRate: sampleRate)
+
+        let wavFile = tempFile(extension: "wav")
+        let aacFile = tempFile(extension: "m4a")
+        defer {
+            try? FileManager.default.removeItem(atPath: wavFile.path)
+            try? FileManager.default.removeItem(atPath: aacFile.path)
+        }
+
+        try await original.write(to: wavFile, as: .wav)
+        try await original.write(to: aacFile, as: .aac)
+
+        let wav = try await PCMContainer(from: wavFile, sampleRate: sampleRate)
+        let aac = try await PCMContainer(from: aacFile, sampleRate: sampleRate)
+        let wavPeakFrame = strongestFrame(in: wav, channel: 0)
+        let aacPeakFrame = strongestFrame(in: aac, channel: 0)
+
+        #expect(wavPeakFrame == transientFrame)
+        #expect(abs(aacPeakFrame - wavPeakFrame) <= 96)
+        #expect(aac.channelCount == channelCount)
+    }
+
+    /// Returns the frame containing the largest absolute sample in one channel.
+    private func strongestFrame(in pcm: PCMContainer, channel: Int) -> Int {
+        let frameCount = pcm.content.shape[1]
+        var strongestFrame = 0
+        var strongestValue: Float = 0
+        for frame in 0..<frameCount {
+            let value = abs(pcm.content[channel, frame])
+            guard value > strongestValue else { continue }
+            strongestFrame = frame
+            strongestValue = value
+        }
+        return strongestFrame
+    }
+
     /// Verifies that each supported output format writes a decodable audio file.
     @Test("write(to:as:) — common formats are writable and readable")
     func writeCommonFormats() async throws {

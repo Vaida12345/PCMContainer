@@ -215,21 +215,37 @@ private extension PCMContainer {
             let sampleCount = CMSampleBufferGetNumSamples(sampleBuffer)
             guard sampleCount > 0 else { continue }
 
+            let trimStart = Self.trimFrameCount(
+                in: sampleBuffer,
+                key: kCMSampleBufferAttachmentKey_TrimDurationAtStart,
+                sampleRate: sampleRate
+            )
+            let trimEnd = Self.trimFrameCount(
+                in: sampleBuffer,
+                key: kCMSampleBufferAttachmentKey_TrimDurationAtEnd,
+                sampleRate: sampleRate
+            )
+            let validSourceStart = min(sampleCount, trimStart)
+            let validSourceEnd = max(validSourceStart, sampleCount - trimEnd)
+            let validFrameCount = validSourceEnd - validSourceStart
+            guard validFrameCount > 0 else { continue }
+
             let presentationTime = CMSampleBufferGetOutputPresentationTimeStamp(sampleBuffer)
             let startFrame = Self.outputFrameIndex(for: presentationTime, sampleRate: sampleRate)
             let destinationStart = max(0, startFrame)
-            let sourceOffset = max(0, -startFrame)
-            guard sourceOffset < sampleCount else { continue }
+            let clippedLeadingFrameCount = max(0, -startFrame)
+            guard clippedLeadingFrameCount < validFrameCount else { continue }
 
-            let copiedFrameCount = sampleCount - sourceOffset
+            let sourceOffset = validSourceStart + clippedLeadingFrameCount
+            let copiedFrameCount = validFrameCount - clippedLeadingFrameCount
             let requiredFrameCount = destinationStart + copiedFrameCount
             Self.ensureFrameCapacity(requiredFrameCount, in: &content)
 
             try sampleBuffer.withAudioBufferList(flags: [.audioBufferListAssure16ByteAlignment]) { bufferList, _ in
                 try Self.copySamples(
                     from: bufferList,
-                    sampleCount: sampleCount,
                     sourceOffset: sourceOffset,
+                    frameCount: copiedFrameCount,
                     destinationStart: destinationStart,
                     channelCount: channelCount,
                     into: &content
@@ -240,9 +256,7 @@ private extension PCMContainer {
 
         guard reader.status == .completed else { throw reader.error ?? ReadError.assetReaderError }
 
-        let frameCount = max(decodedFrameCount, estimatedFrameCount)
-        Self.ensureFrameCapacity(frameCount, in: &content)
-        return content
+        return Self.resized(content, frameCount: decodedFrameCount)
     }
 
     /// Extends decoded storage to contain at least `frameCount` frames, preserving existing samples.
@@ -267,24 +281,53 @@ private extension PCMContainer {
         content = expanded
     }
 
+    /// Returns a copy of decoded storage containing exactly `frameCount` frames.
+    static func resized(_ content: MultiArray<Float>, frameCount: Int) -> MultiArray<Float> {
+        guard frameCount != content.shape[1] else { return content }
+
+        let channelCount = content.shape[0]
+        let resized = MultiArray<Float>.zeros(channelCount, max(0, frameCount))
+        let copiedFrameCount = min(content.shape[1], resized.shape[1])
+        guard copiedFrameCount > 0 else { return resized }
+
+        for channel in 0..<channelCount {
+            _ = memcpy(
+                resized.pointer(channel),
+                content.pointer(channel),
+                copiedFrameCount * MemoryLayout<Float>.stride
+            )
+        }
+        return resized
+    }
+
     /// Converts a Core Media time to the nearest output PCM frame index.
     static func outputFrameIndex(for time: CMTime, sampleRate: Double) -> Int {
         guard time.isValid && !time.isIndefinite && time.seconds.isFinite else { return 0 }
         return Int((time.seconds * sampleRate).rounded())
     }
 
-    /// Copies Float32 samples from a decoded sample buffer into channel-major PCM storage.
+    /// Reads a sample-buffer trim attachment and converts it to frames at the output sample rate.
+    static func trimFrameCount(in sampleBuffer: CMSampleBuffer, key: CFString, sampleRate: Double) -> Int {
+        guard let attachment = CMGetAttachment(sampleBuffer, key: key, attachmentModeOut: nil),
+              CFGetTypeID(attachment) == CFDictionaryGetTypeID() else {
+            return 0
+        }
+
+        let dictionary = unsafeDowncast(attachment, to: CFDictionary.self)
+        let time = CMTimeMakeFromDictionary(dictionary)
+        return max(0, Self.outputFrameIndex(for: time, sampleRate: sampleRate))
+    }
+
+    /// Copies a bounded Float32 frame range from a decoded sample buffer into channel-major PCM storage.
     static func copySamples(
         from bufferList: UnsafeMutableAudioBufferListPointer,
-        sampleCount: Int,
         sourceOffset: Int,
+        frameCount: Int,
         destinationStart: Int,
         channelCount: Int,
         into content: inout MultiArray<Float>
     ) throws {
         guard bufferList.count > 0 else { throw ReadError.conversionFailed }
-
-        let frameCount = sampleCount - sourceOffset
         guard frameCount > 0 else { return }
 
         if bufferList.count == channelCount {
