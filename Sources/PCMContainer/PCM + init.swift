@@ -24,8 +24,10 @@ extension PCMContainer {
         var result = MultiArray<Float>.zeros(1, frameCount)
         
         for channel in 0..<channelCount {
-            let source = self.content.sequence(at: [channel])
-            vDSP.add(result, source, result: &result)
+            vDSP_vadd(result.baseAddress, 1,
+                      self.content.pointer(channel), 1,
+                      result.baseAddress, 1,
+                      vDSP_Length(self.content.shape.last!))
         }
         
         let scale = Float(1.0 / Double(channelCount))
