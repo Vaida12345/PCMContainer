@@ -29,7 +29,8 @@ let package = Package(
         ),
         .testTarget(
             name: "PCMContainerTests",
-            dependencies: ["PCMContainer"]
+            dependencies: ["PCMContainer"],
+            resources: [.copy("Resources")]
         ),
     ],
     swiftLanguageModes: [.v6]

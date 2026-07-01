@@ -218,6 +218,21 @@ struct PCMContainerIOTests {
         #expect(trimmedRange == 211..<987)
         #expect(untrimmedRange == 0..<1_024)
     }
+    
+    @Test func decodeUntrimmed() async throws {
+        let container = try await PCMContainer(
+            from: .bundleItem(
+                forResource: "Rose Adagio",
+                withExtension: "mp3",
+                subdirectory: "Resources",
+                in: .module
+            ),
+            sampleRate: 44100,
+            options: .decodeUntrimmed
+        )
+        
+        #expect(container.content.shape[1] == 14802048)
+    }
 
     /// Returns the frame containing the largest absolute sample in one channel.
     private func strongestFrame(in pcm: PCMContainer, channel: Int) -> Int {
