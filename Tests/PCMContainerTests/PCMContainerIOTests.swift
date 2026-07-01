@@ -191,11 +191,15 @@ struct PCMContainerIOTests {
 
         let wav = try await PCMContainer(from: wavFile, sampleRate: sampleRate)
         let aac = try await PCMContainer(from: aacFile, sampleRate: sampleRate)
+        let untrimmedAAC = try await PCMContainer(from: aacFile, sampleRate: sampleRate, options: .decodeUntrimmed)
         let wavPeakFrame = strongestFrame(in: wav, channel: 0)
         let aacPeakFrame = strongestFrame(in: aac, channel: 0)
+        let untrimmedAACPeakFrame = strongestFrame(in: untrimmedAAC, channel: 0)
 
         #expect(wavPeakFrame == transientFrame)
         #expect(abs(aacPeakFrame - wavPeakFrame) <= 96)
+        #expect(untrimmedAACPeakFrame > aacPeakFrame)
+        #expect(untrimmedAAC.content.shape[1] > aac.content.shape[1])
         #expect(aac.channelCount == channelCount)
     }
 
