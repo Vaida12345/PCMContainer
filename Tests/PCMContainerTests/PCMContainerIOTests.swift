@@ -233,6 +233,26 @@ struct PCMContainerIOTests {
         
         #expect(container.content.shape[1] == 14802048)
     }
+    
+    /// Verifies that untrimmed MP3 decoding stays aligned with the pydub / ffmpeg reference fixture.
+    @Test func readUntrimmedAndCompareWithPyTorch() async throws {
+        let container = try await PCMContainer(
+            from: .bundleItem(
+                forResource: "Rose Adagio",
+                withExtension: "mp3",
+                subdirectory: "Resources",
+                in: .module
+            ),
+            sampleRate: 44100,
+            options: .decodeUntrimmed
+        )
+        let expected = MultiArray<Float>.allocate(2, 14802048)
+        try expected.load(from: .bundleItem(forResource: "RoseAdagio", withExtension: "bin", subdirectory: "Resources", in: .module))
+        
+        #expect(container.content.shape == expected.shape)
+        #expect(container.content.normalizedMSE(to: expected) < 0.02)
+        #expect(container.content.maxAbsoluteError(to: expected) < 0.2)
+    }
 
     /// Returns the frame containing the largest absolute sample in one channel.
     private func strongestFrame(in pcm: PCMContainer, channel: Int) -> Int {

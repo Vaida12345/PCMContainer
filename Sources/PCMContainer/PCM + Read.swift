@@ -246,6 +246,8 @@ private extension PCMContainer {
     }
     
     /// Restores decoded valid frames to the full package length declared by the source packet table.
+    ///
+    /// `AVAudioFile` has already removed the packet-table priming span from its reported valid frames. To match ffmpeg / pydub's full decoded package, the valid decode is placed after the decoder's priming delay and the packet-table priming span.
     static func restoredFullPackage(
         _ decoded: MultiArray<Float>,
         from url: URL,
@@ -263,16 +265,18 @@ private extension PCMContainer {
             from: sourceSampleRate,
             to: outputSampleRate
         )
+        let restoredStartFrame = primingFrameCount * 2
         guard packageFrameCount > decoded.shape[1] else { return decoded }
+        guard restoredStartFrame < packageFrameCount else { return decoded }
         
         let channelCount = decoded.shape[0]
         let restored = MultiArray<Float>.zeros(channelCount, packageFrameCount)
-        let copiedFrameCount = min(decoded.shape[1], packageFrameCount - primingFrameCount)
+        let copiedFrameCount = min(decoded.shape[1], packageFrameCount - restoredStartFrame)
         guard copiedFrameCount > 0 else { return restored }
         
         for channel in 0..<channelCount {
             memcpy(
-                restored.pointer(channel) + primingFrameCount,
+                restored.pointer(channel) + restoredStartFrame,
                 decoded.pointer(channel),
                 copiedFrameCount * MemoryLayout<Float>.stride
             )
