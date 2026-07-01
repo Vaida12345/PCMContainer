@@ -10,6 +10,7 @@ import PCMContainer
 import MultiArray
 import FinderItem
 import Foundation
+@preconcurrency import AVFoundation
 
 
 @Suite("PCMContainer — I/O")
@@ -163,6 +164,61 @@ struct PCMContainerIOTests {
         #expect(restored.sampleRate == 44100)
     }
 
+    // MARK: - Output formats
+
+    /// Verifies that each supported output format writes a decodable audio file.
+    @Test("write(to:as:) — common formats are writable and readable")
+    func writeCommonFormats() async throws {
+        let content = MultiArray<Float>([
+            [0.0, 0.25, 0.5, 0.25, 0.0, -0.25, -0.5, -0.25],
+            [0.5, 0.25, 0.0, -0.25, -0.5, -0.25, 0.0, 0.25],
+        ])
+        let original = PCMContainer(content: content, sampleRate: 44100)
+        let formats: [(extension: String, format: AudioFileFormat, isLosslessPCM: Bool)] = [
+            ("wav", .wav, true),
+            ("aiff", .aiff, true),
+            ("caf", .caf, true),
+            ("m4a", .aac, false),
+            ("m4a", .alac(), false),
+        ]
+
+        for format in formats {
+            let file = tempFile(extension: format.extension)
+            defer { try? FileManager.default.removeItem(atPath: file.path) }
+
+            try await original.write(to: file, as: format.format)
+            let restored = try await PCMContainer(from: file)
+
+            #expect(restored.sampleRate == 44100)
+            #expect(restored.channelCount == 2)
+            #expect(restored.sampleCount > 0)
+            if format.isLosslessPCM {
+                #expect(restored.contentsEqual(original, tolerance: 1e-4))
+            }
+        }
+    }
+
+    /// Verifies that `AudioFileFormat` maps to the expected Core Audio format identifiers.
+    @Test("AudioFileFormat settings expose expected Core Audio format identifiers")
+    func audioFileFormatSettings() {
+        let sampleRate = 44100.0
+        let channelCount = 2
+        let expectedFormats: [(AudioFileFormat, AudioFormatID)] = [
+            (.wav, kAudioFormatLinearPCM),
+            (.aiff, kAudioFormatLinearPCM),
+            (.caf, kAudioFormatLinearPCM),
+            (.aac, kAudioFormatMPEG4AAC),
+            (.alac(), kAudioFormatAppleLossless),
+        ]
+
+        for expectedFormat in expectedFormats {
+            let settings = expectedFormat.0.settings(sampleRate: sampleRate, channelCount: channelCount)
+            #expect(settings[AVSampleRateKey] as? Double == sampleRate)
+            #expect(settings[AVNumberOfChannelsKey] as? Int == channelCount)
+            #expect(settings[AVFormatIDKey] as? AudioFormatID == expectedFormat.1)
+        }
+    }
+
     // MARK: - write(to:) edge cases
 
     @Test("write overwrites existing file")
@@ -187,12 +243,11 @@ struct PCMContainerIOTests {
         #expect(!restored.contentsEqual(first))
     }
 
-    // MARK: - 3+ channel limitation
+    // MARK: - Multichannel output
 
-    @Test("write(to:) — throws formatUnavailable for 3-channel audio")
-    func writeThreeChannelThrows() async throws {
-        // AVAudioFormat(commonFormat:...) only supports 1 or 2 channels.
-        // 3+ channels returns nil regardless of interleaving.
+    /// Verifies that the default WAV writer can round-trip three-channel PCM content.
+    @Test("write(to:) — supports 3-channel audio")
+    func writeThreeChannelRoundtrip() async throws {
         let content = MultiArray<Float>([
             [0.1, 0.2, 0.3],
             [0.4, 0.5, 0.6],
@@ -203,31 +258,34 @@ struct PCMContainerIOTests {
         let file = tempFile()
         defer { try? FileManager.default.removeItem(atPath: file.path) }
 
-        await #expect(throws: PCMContainer.ReadError.formatUnavailable) {
-            try await pcm.write(to: file)
-        }
+        try await pcm.write(to: file)
+        let restored = try await PCMContainer(from: file)
+
+        #expect(restored.sampleRate == 44100)
+        #expect(restored.channelCount == 3)
+        #expect(restored.contentsEqual(pcm, tolerance: 1e-4))
     }
 
-    @Test("init(from:) — throws formatUnavailable for 3-channel WAV")
-    func readThreeChannelThrows() async throws {
-        // Same limitation applies to reading: the output format
-        // can't be created for 3+ channels.
-        // Since 3-channel WAV files can't be written through AVFoundation
-        // either, this is consistent — PCMContainer only supports
-        // mono and stereo through the WAV I/O path.
-    }
-
-    @Test("write(to:) — throws formatUnavailable for 5-channel audio")
-    func writeFiveChannelThrows() async throws {
+    /// Verifies that the default WAV writer can round-trip five-channel PCM content.
+    @Test("write(to:) — supports 5-channel audio")
+    func writeFiveChannelRoundtrip() async throws {
         let content = MultiArray<Float>.zeros(5, 100)
+        for channel in 0..<5 {
+            for frame in 0..<100 {
+                content[channel, frame] = Float(channel * 100 + frame) / 500
+            }
+        }
         let pcm = PCMContainer(content: content, sampleRate: 44100)
 
         let file = tempFile()
         defer { try? FileManager.default.removeItem(atPath: file.path) }
 
-        await #expect(throws: PCMContainer.ReadError.formatUnavailable) {
-            try await pcm.write(to: file)
-        }
+        try await pcm.write(to: file)
+        let restored = try await PCMContainer(from: file)
+
+        #expect(restored.sampleRate == 44100)
+        #expect(restored.channelCount == 5)
+        #expect(restored.contentsEqual(pcm, tolerance: 1e-4))
     }
 
     // MARK: - Sample rate edge cases
