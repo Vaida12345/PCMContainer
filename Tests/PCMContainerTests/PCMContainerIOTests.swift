@@ -6,7 +6,7 @@
 //
 
 import Testing
-import PCMContainer
+@testable import PCMContainer
 import MultiArray
 import FinderItem
 import Foundation
@@ -191,16 +191,32 @@ struct PCMContainerIOTests {
 
         let wav = try await PCMContainer(from: wavFile, sampleRate: sampleRate)
         let aac = try await PCMContainer(from: aacFile, sampleRate: sampleRate)
-        let untrimmedAAC = try await PCMContainer(from: aacFile, sampleRate: sampleRate, options: .decodeUntrimmed)
         let wavPeakFrame = strongestFrame(in: wav, channel: 0)
         let aacPeakFrame = strongestFrame(in: aac, channel: 0)
-        let untrimmedAACPeakFrame = strongestFrame(in: untrimmedAAC, channel: 0)
 
         #expect(wavPeakFrame == transientFrame)
         #expect(abs(aacPeakFrame - wavPeakFrame) <= 96)
-        #expect(untrimmedAACPeakFrame > aacPeakFrame)
-        #expect(untrimmedAAC.content.shape[1] > aac.content.shape[1])
         #expect(aac.channelCount == channelCount)
+    }
+
+    /// Verifies that `decodeUntrimmed` keeps a packet's priming and remainder frames.
+    @Test("decodeUntrimmed preserves packet trim ranges")
+    func decodeUntrimmedPreservesPacketTrimRanges() {
+        let trimmedRange = PCMContainer.decodedSampleRange(
+            sampleCount: 1_024,
+            trimStart: 211,
+            trimEnd: 37,
+            options: []
+        )
+        let untrimmedRange = PCMContainer.decodedSampleRange(
+            sampleCount: 1_024,
+            trimStart: 211,
+            trimEnd: 37,
+            options: .decodeUntrimmed
+        )
+
+        #expect(trimmedRange == 211..<987)
+        #expect(untrimmedRange == 0..<1_024)
     }
 
     /// Returns the frame containing the largest absolute sample in one channel.

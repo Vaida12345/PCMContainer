@@ -79,6 +79,25 @@ extension PCMContainer {
 }
 
 
+extension PCMContainer {
+    /// Returns the source sample range that should be copied from a decoded packet.
+    static func decodedSampleRange(
+        sampleCount: Int,
+        trimStart: Int,
+        trimEnd: Int,
+        options: DecodeOptions
+    ) -> Range<Int> {
+        guard sampleCount > 0 else { return 0..<0 }
+        guard !options.contains(.decodeUntrimmed) else { return 0..<sampleCount }
+        
+        let sourceStart = min(sampleCount, max(0, trimStart))
+        let sourceEnd = max(sourceStart, sampleCount - max(0, trimEnd))
+        return sourceStart..<sourceEnd
+    }
+    
+}
+
+
 private extension PCMContainer {
     
     /// Decodes audio through `AVAssetReader` and places each buffer on its output timeline.
@@ -130,19 +149,22 @@ private extension PCMContainer {
                 key: kCMSampleBufferAttachmentKey_TrimDurationAtEnd,
                 sampleRate: sampleRate
             )
-            let validSourceStart = min(sampleCount, trimStart)
-            let validSourceEnd = max(validSourceStart, sampleCount - trimEnd)
-            let validFrameCount = validSourceEnd - validSourceStart
-            guard validFrameCount > 0 else { continue }
+            let validRange = Self.decodedSampleRange(
+                sampleCount: sampleCount,
+                trimStart: trimStart,
+                trimEnd: trimEnd,
+                options: options
+            )
+            guard validRange.count > 0 else { continue }
             
             let presentationTime = CMSampleBufferGetOutputPresentationTimeStamp(sampleBuffer)
             let startFrame = Self.outputFrameIndex(for: presentationTime, sampleRate: sampleRate)
             let destinationStart = max(0, startFrame)
             let clippedLeadingFrameCount = max(0, -startFrame)
-            guard clippedLeadingFrameCount < validFrameCount else { continue }
+            guard clippedLeadingFrameCount < validRange.count else { continue }
             
-            let sourceOffset = validSourceStart + clippedLeadingFrameCount
-            let copiedFrameCount = validFrameCount - clippedLeadingFrameCount
+            let sourceOffset = validRange.startIndex + clippedLeadingFrameCount
+            let copiedFrameCount = validRange.count - clippedLeadingFrameCount
             let requiredFrameCount = destinationStart + copiedFrameCount
             Self.ensureFrameCapacity(requiredFrameCount, in: &content)
             
