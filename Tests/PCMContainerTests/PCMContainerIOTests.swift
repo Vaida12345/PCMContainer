@@ -250,8 +250,8 @@ struct PCMContainerIOTests {
         try expected.load(from: .bundleItem(forResource: "RoseAdagio", withExtension: "bin", subdirectory: "Resources", in: .module))
         
         #expect(container.content.shape == expected.shape)
-        #expect(container.content.normalizedMSE(to: expected) < 0.02)
-        #expect(container.content.maxAbsoluteError(to: expected) < 0.2)
+        #expect(container.content.normalizedMSE(to: expected) < 1e-6)
+        #expect(container.content.maxAbsoluteError(to: expected) < 1e-4)
     }
 
     /// Returns the frame containing the largest absolute sample in one channel.

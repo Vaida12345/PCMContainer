@@ -77,7 +77,7 @@ extension PCMContainer {
         
         /// Returns the full source package span, which can include priming frames and remainder frames.
         ///
-        /// By default, Swift returns gapless-trimmed valid frames. Use this option to request the full package frame count, which is useful to reproduce pydub / ffmpeg duration behavior.
+        /// By default, Swift returns gapless-trimmed valid frames. Use this option to request the full package frame count, which is useful to reproduce pydub / ffmpeg behavior.
         public static let decodeUntrimmed = DecodeOptions(rawValue: 1 << 0)
     }
     
@@ -247,7 +247,7 @@ private extension PCMContainer {
     
     /// Restores decoded valid frames to the full package length declared by the source packet table.
     ///
-    /// `AVAudioFile` has already removed the packet-table priming span from its reported valid frames. To match ffmpeg / pydub's full decoded package, the valid decode is placed after the decoder's priming delay and the packet-table priming span.
+    /// `AVAudioFile` has already removed the packet-table priming span from its reported valid frames. To match ffmpeg / pydub's full decoded package, the valid decode is placed after the decoder's priming delay, the packet-table priming span, and the frame boundary used by ffmpeg's MP3 output.
     static func restoredFullPackage(
         _ decoded: MultiArray<Float>,
         from url: URL,
@@ -265,7 +265,7 @@ private extension PCMContainer {
             from: sourceSampleRate,
             to: outputSampleRate
         )
-        let restoredStartFrame = primingFrameCount * 2
+        let restoredStartFrame = primingFrameCount * 2 + 1
         guard packageFrameCount > decoded.shape[1] else { return decoded }
         guard restoredStartFrame < packageFrameCount else { return decoded }
         
