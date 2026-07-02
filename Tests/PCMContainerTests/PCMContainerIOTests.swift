@@ -199,59 +199,16 @@ struct PCMContainerIOTests {
         #expect(aac.channelCount == channelCount)
     }
 
-    /// Verifies that `decodeUntrimmed` keeps a packet's priming and remainder frames.
-    @Test("decodeUntrimmed preserves packet trim ranges")
-    func decodeUntrimmedPreservesPacketTrimRanges() {
+    /// Verifies that decoder trim metadata selects only valid sample frames.
+    @Test("decodedSampleRange applies packet trim ranges")
+    func decodedSampleRangeAppliesPacketTrimRanges() {
         let trimmedRange = PCMContainer.decodedSampleRange(
             sampleCount: 1_024,
             trimStart: 211,
-            trimEnd: 37,
-            options: []
-        )
-        let untrimmedRange = PCMContainer.decodedSampleRange(
-            sampleCount: 1_024,
-            trimStart: 211,
-            trimEnd: 37,
-            options: .decodeUntrimmed
+            trimEnd: 37
         )
 
         #expect(trimmedRange == 211..<987)
-        #expect(untrimmedRange == 0..<1_024)
-    }
-    
-    @Test func decodeUntrimmed() async throws {
-        let container = try await PCMContainer(
-            from: .bundleItem(
-                forResource: "Rose Adagio",
-                withExtension: "mp3",
-                subdirectory: "Resources",
-                in: .module
-            ),
-            sampleRate: 44100,
-            options: .decodeUntrimmed
-        )
-        
-        #expect(container.content.shape[1] == 14802048)
-    }
-    
-    /// Verifies that untrimmed MP3 decoding stays aligned with the pydub / ffmpeg reference fixture.
-    @Test func readUntrimmedAndCompareWithPyTorch() async throws {
-        let container = try await PCMContainer(
-            from: .bundleItem(
-                forResource: "Rose Adagio",
-                withExtension: "mp3",
-                subdirectory: "Resources",
-                in: .module
-            ),
-            sampleRate: 44100,
-            options: .decodeUntrimmed
-        )
-        let expected = MultiArray<Float>.allocate(2, 14802048)
-        try expected.load(from: .bundleItem(forResource: "RoseAdagio", withExtension: "bin", subdirectory: "Resources", in: .module))
-        
-        #expect(container.content.shape == expected.shape)
-        #expect(container.content.normalizedMSE(to: expected) < 1e-6)
-        #expect(container.content.maxAbsoluteError(to: expected) < 1e-4)
     }
 
     /// Returns the frame containing the largest absolute sample in one channel.

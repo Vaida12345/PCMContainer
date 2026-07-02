@@ -8,7 +8,6 @@
 import MultiArray
 import FinderItem
 import AVFoundation
-import AudioToolbox
 
 
 extension PCMContainer {
@@ -16,7 +15,6 @@ extension PCMContainer {
     /// Error thrown by `init(from:)` and `write(to:as:)`.
     public enum ReadError: Error {
         case assetReaderError
-        case converterUnavailable
         case conversionFailed
         case formatUnavailable
         case noAudioTrack
@@ -38,27 +36,19 @@ extension PCMContainer {
     /// - Parameters:
     ///   - source: Audio file to decode.
     ///   - sampleRate: If specified, the output PCM is decoded at this sample rate.
-    ///   - options: Flags controlling how decoder padding and trim metadata are handled.
     public init(
         from source: FinderItem,
-        sampleRate: Double? = nil,
-        options: DecodeOptions = []
+        sampleRate: Double? = nil
     ) async throws {
         let inputFile = try AVAudioFile(forReading: source.url)
         let inFormat = inputFile.processingFormat
         let resolvedSampleRate = sampleRate ?? inFormat.sampleRate
         let channelCount = Int(inFormat.channelCount)
-        
-        let result: MultiArray<Float>
-        if options.contains(.decodeUntrimmed) {
-            result = try Self.decodeUntrimmedPCM(from: inputFile, url: source.url, sampleRate: resolvedSampleRate)
-        } else {
-            result = try await Self.decodeTimelineCorrectPCM(
-                from: source.url,
-                sampleRate: resolvedSampleRate,
-                channelCount: channelCount
-            )
-        }
+        let result = try await Self.decodeTimelineCorrectPCM(
+            from: source.url,
+            sampleRate: resolvedSampleRate,
+            channelCount: channelCount
+        )
         
         self.content = result
         self.sampleRate = resolvedSampleRate
@@ -68,32 +58,13 @@ extension PCMContainer {
 
 
 extension PCMContainer {
-    
-    public struct DecodeOptions: OptionSet, Sendable, Hashable {
-        public var rawValue: UInt
-        public init(rawValue: UInt) {
-            self.rawValue = rawValue
-        }
-        
-        /// Returns the full source package span, which can include priming frames and remainder frames.
-        ///
-        /// By default, Swift returns gapless-trimmed valid frames. Use this option to request the full package frame count, which is useful to reproduce pydub / ffmpeg behavior.
-        public static let decodeUntrimmed = DecodeOptions(rawValue: 1 << 0)
-    }
-    
-}
-
-
-extension PCMContainer {
-    /// Returns the source sample range that should be copied from a decoded packet.
+    /// Returns the source sample range after applying decoder trim metadata.
     static func decodedSampleRange(
         sampleCount: Int,
         trimStart: Int,
-        trimEnd: Int,
-        options: DecodeOptions
+        trimEnd: Int
     ) -> Range<Int> {
         guard sampleCount > 0 else { return 0..<0 }
-        guard !options.contains(.decodeUntrimmed) else { return 0..<sampleCount }
         
         let sourceStart = min(sampleCount, max(0, trimStart))
         let sourceEnd = max(sourceStart, sampleCount - max(0, trimEnd))
@@ -154,8 +125,7 @@ private extension PCMContainer {
             let validRange = Self.decodedSampleRange(
                 sampleCount: sampleCount,
                 trimStart: trimStart,
-                trimEnd: trimEnd,
-                options: []
+                trimEnd: trimEnd
             )
             guard validRange.count > 0 else { continue }
             
@@ -186,171 +156,6 @@ private extension PCMContainer {
         guard reader.status == .completed else { throw reader.error ?? ReadError.assetReaderError }
         
         return Self.resized(content, frameCount: decodedFrameCount)
-    }
-    
-    /// Decodes valid frames through `AVAudioFile` and restores the full package frame span when metadata is available.
-    static func decodeUntrimmedPCM(from inputFile: AVAudioFile, url: URL, sampleRate: Double) throws -> MultiArray<Float> {
-        let sourceFormat = inputFile.processingFormat
-        guard sourceFormat.channelCount > 0 else { throw ReadError.formatUnavailable }
-        guard inputFile.length <= AVAudioFramePosition(AVAudioFrameCount.max) else {
-            throw ReadError.formatUnavailable
-        }
-        guard let sourceBuffer = AVAudioPCMBuffer(
-            pcmFormat: sourceFormat,
-            frameCapacity: AVAudioFrameCount(inputFile.length)
-        ) else {
-            throw ReadError.formatUnavailable
-        }
-        
-        inputFile.framePosition = 0
-        try inputFile.read(into: sourceBuffer)
-        guard sourceBuffer.frameLength > 0 else {
-            return MultiArray<Float>.zeros(Int(sourceFormat.channelCount), 0)
-        }
-        
-        let outputFormat = try Self.floatPCMFormat(
-            sampleRate: sampleRate,
-            channelCount: sourceFormat.channelCount
-        )
-        let decoded: MultiArray<Float>
-        if Self.needsConversion(from: sourceBuffer.format, to: outputFormat) {
-            guard let converter = AVAudioConverter(from: sourceBuffer.format, to: outputFormat) else {
-                throw ReadError.converterUnavailable
-            }
-            let ratio = sampleRate / sourceBuffer.format.sampleRate
-            let outputCapacity = AVAudioFrameCount((Double(sourceBuffer.frameLength) * ratio).rounded(.up)) + 1
-            guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outputCapacity) else {
-                throw ReadError.formatUnavailable
-            }
-            
-            var didProvideInput = false
-            var conversionError: NSError?
-            let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
-                guard !didProvideInput else {
-                    outStatus.pointee = .endOfStream
-                    return nil
-                }
-                
-                didProvideInput = true
-                outStatus.pointee = .haveData
-                return sourceBuffer
-            }
-            guard conversionError == nil else { throw conversionError! }
-            guard status != .error else { throw ReadError.conversionFailed }
-            decoded = try Self.multiArray(from: outputBuffer)
-        } else {
-            decoded = try Self.multiArray(from: sourceBuffer)
-        }
-        
-        return try Self.restoredFullPackage(decoded, from: url, sourceSampleRate: sourceFormat.sampleRate, outputSampleRate: sampleRate)
-    }
-    
-    /// Restores decoded valid frames to the full package length declared by the source packet table.
-    ///
-    /// `AVAudioFile` has already removed the packet-table priming span from its reported valid frames. To match ffmpeg / pydub's full decoded package, the valid decode is placed after the decoder's priming delay, the packet-table priming span, and the frame boundary used by ffmpeg's MP3 output.
-    static func restoredFullPackage(
-        _ decoded: MultiArray<Float>,
-        from url: URL,
-        sourceSampleRate: Double,
-        outputSampleRate: Double
-    ) throws -> MultiArray<Float> {
-        guard let packetTableInfo = try Self.packetTableInfo(for: url) else { return decoded }
-        let packageFrameCount = Self.convertFrameCount(
-            packetTableInfo.mNumberValidFrames + Int64(packetTableInfo.mPrimingFrames) + Int64(packetTableInfo.mRemainderFrames),
-            from: sourceSampleRate,
-            to: outputSampleRate
-        )
-        let primingFrameCount = Self.convertFrameCount(
-            Int64(packetTableInfo.mPrimingFrames),
-            from: sourceSampleRate,
-            to: outputSampleRate
-        )
-        let restoredStartFrame = primingFrameCount * 2 + 1
-        guard packageFrameCount > decoded.shape[1] else { return decoded }
-        guard restoredStartFrame < packageFrameCount else { return decoded }
-        
-        let channelCount = decoded.shape[0]
-        let restored = MultiArray<Float>.zeros(channelCount, packageFrameCount)
-        let copiedFrameCount = min(decoded.shape[1], packageFrameCount - restoredStartFrame)
-        guard copiedFrameCount > 0 else { return restored }
-        
-        for channel in 0..<channelCount {
-            memcpy(
-                restored.pointer(channel) + restoredStartFrame,
-                decoded.pointer(channel),
-                copiedFrameCount * MemoryLayout<Float>.stride
-            )
-        }
-        return restored
-    }
-    
-    /// Reads packet-table frame counts from an audio file when the container exposes them.
-    static func packetTableInfo(for url: URL) throws -> AudioFilePacketTableInfo? {
-        var audioFile: AudioFileID?
-        let openStatus = AudioFileOpenURL(url as CFURL, .readPermission, 0, &audioFile)
-        guard openStatus == noErr, let audioFile else { return nil }
-        defer { AudioFileClose(audioFile) }
-        
-        var info = AudioFilePacketTableInfo()
-        var infoSize = UInt32(MemoryLayout<AudioFilePacketTableInfo>.size)
-        let status = AudioFileGetProperty(audioFile, kAudioFilePropertyPacketTableInfo, &infoSize, &info)
-        guard status == noErr else { return nil }
-        return info
-    }
-    
-    /// Converts a source-frame count to the requested output sample rate.
-    static func convertFrameCount(_ frameCount: Int64, from sourceSampleRate: Double, to outputSampleRate: Double) -> Int {
-        guard frameCount > 0 else { return 0 }
-        return Int((Double(frameCount) * outputSampleRate / sourceSampleRate).rounded())
-    }
-    
-    /// Creates a non-interleaved Float32 PCM format for decoded output.
-    static func floatPCMFormat(sampleRate: Double, channelCount: AVAudioChannelCount) throws -> AVAudioFormat {
-        guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: sampleRate,
-            channels: channelCount,
-            interleaved: false
-        ) else {
-            throw ReadError.formatUnavailable
-        }
-        return format
-    }
-    
-    /// Returns whether an audio buffer must be converted before copying into channel-major storage.
-    static func needsConversion(from sourceFormat: AVAudioFormat, to outputFormat: AVAudioFormat) -> Bool {
-        sourceFormat.commonFormat != .pcmFormatFloat32 ||
-        sourceFormat.sampleRate != outputFormat.sampleRate ||
-        sourceFormat.channelCount != outputFormat.channelCount ||
-        sourceFormat.isInterleaved
-    }
-    
-    /// Copies an audio PCM buffer into channel-major `MultiArray` storage.
-    static func multiArray(from buffer: AVAudioPCMBuffer) throws -> MultiArray<Float> {
-        let channelCount = Int(buffer.format.channelCount)
-        let frameCount = Int(buffer.frameLength)
-        let content = MultiArray<Float>.zeros(channelCount, frameCount)
-        guard frameCount > 0 else { return content }
-        guard let channelData = buffer.floatChannelData else { throw ReadError.conversionFailed }
-        
-        if buffer.format.isInterleaved {
-            let source = channelData[0]
-            for channel in 0..<channelCount {
-                let destination = content.pointer(channel)
-                var sourceIndex = channel
-                var frame = 0
-                while frame < frameCount {
-                    destination[frame] = source[sourceIndex]
-                    sourceIndex += channelCount
-                    frame += 1
-                }
-            }
-        } else {
-            for channel in 0..<channelCount {
-                memcpy(content.pointer(channel), channelData[channel], frameCount * MemoryLayout<Float>.stride)
-            }
-        }
-        return content
     }
     
     /// Extends decoded storage to contain at least `frameCount` frames, preserving existing samples.
