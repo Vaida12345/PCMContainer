@@ -26,7 +26,7 @@ extension PCMContainer {
     }
     
     
-    public struct STFT: Sendable {
+    public struct STFT {
         
         public let n_fft: Int
         

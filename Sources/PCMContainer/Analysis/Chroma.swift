@@ -82,7 +82,7 @@ extension PCMContainer {
     }
 
     /// Frame-wise chroma (HPCP-like) features with 12 pitch classes per frame.
-    public struct Chroma: Sendable {
+    public struct Chroma {
 
         /// Chroma matrix with shape `frameCount, 12`.
         ///

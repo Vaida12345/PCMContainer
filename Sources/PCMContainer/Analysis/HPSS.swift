@@ -169,7 +169,7 @@ extension PCMContainer {
     }
 
     /// Harmonic and percussive STFT magnitude components.
-    public struct HPSS: Sendable {
+    public struct HPSS {
 
         /// Harmonic complex spectrogram with shape `frequencyBins × frameCount`.
         public let harmonic: MultiArray<Float>

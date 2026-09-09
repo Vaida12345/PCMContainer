@@ -1,5 +1,5 @@
 {
-  "originHash" : "7d1be70ab62cdc1396e48bdcb2f21a08f6c70031cf3c2c9fe5f077a23157053d",
+  "originHash" : "f39918ee081b10fa6d59c33f5dc397256f0a8fa48c58fd9a08b2f828f4a64ef0",
   "pins" : [
     {
       "identity" : "detaileddescription",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Vaida12345/Essentials.git",
       "state" : {
-        "revision" : "d01d257bb592ebfe882101d262f17691f74750b1",
-        "version" : "1.2.4"
+        "revision" : "a436c677063fe4c8e9581a36e9c2452823eb2f51",
+        "version" : "1.3.0"
       }
     },
     {
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Vaida12345/FinderItem.git",
       "state" : {
-        "revision" : "6b1b16f440d10bf6107171b7045c33da5c3f5fa2",
-        "version" : "2.2.1"
+        "revision" : "c69a06999eadb658c02f1a88c736d61d0e4f2278",
+        "version" : "2.3.0"
       }
     },
     {
@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Vaida12345/MultiArray.git",
       "state" : {
-        "revision" : "04a81c4f38d456391aaa257734df1002e3451032",
-        "version" : "1.2.7"
+        "revision" : "8043b80a59d655dd3a1690be8681b07ae464ae9e",
+        "version" : "1.3.1"
       }
     }
   ],
