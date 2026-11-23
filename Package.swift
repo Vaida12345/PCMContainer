@@ -32,6 +32,5 @@ let package = Package(
             dependencies: ["PCMContainer"],
             resources: [.copy("Resources")]
         ),
-    ],
-    swiftLanguageModes: [.v6]
+    ]
 )
