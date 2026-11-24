@@ -1,5 +1,5 @@
 //
-//  PCM + init.swift
+//  PCM + Channels.swift
 //  PCMContainer
 //
 //  Created by Vaida on 2026-04-01.
