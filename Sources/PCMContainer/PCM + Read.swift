@@ -33,6 +33,8 @@ extension PCMContainer {
     /// Decoding uses `AVAssetReader` sample buffers so presentation timestamps, edit-list
     /// trimming, and gaps are reflected in the returned `[channel, frame]` samples.
     ///
+    /// The file is decoded at its own rate and, if `sampleRate` differs, resampled by one `AVAudioConverter`, so the result is reproducible and sample-aligned. This collects ``chunks(from:sampleRate:maximumFrameCount:)``; to process a long file without holding it whole, iterate those instead.
+    ///
     /// - Parameters:
     ///   - source: Audio file to decode.
     ///   - sampleRate: If specified, the output PCM is decoded at this sample rate.
@@ -40,18 +42,19 @@ extension PCMContainer {
         from source: FinderItem,
         sampleRate: Double? = nil
     ) async throws {
-        let inputFile = try AVAudioFile(forReading: source.url)
-        let inFormat = inputFile.processingFormat
-        let resolvedSampleRate = sampleRate ?? inFormat.sampleRate
-        let channelCount = Int(inFormat.channelCount)
-        let result = try await Self.decodeTimelineCorrectPCM(
-            from: source.url,
-            sampleRate: resolvedSampleRate,
-            channelCount: channelCount
-        )
-        
-        self.content = result
-        self.sampleRate = resolvedSampleRate
+        let chunks = try Self.chunks(from: source, sampleRate: sampleRate)
+        var content = MultiArray<Float>.zeros(chunks.channelCount, max(0, chunks.estimatedFrameCount))
+        var frameCount = 0
+        for try await chunk in chunks {
+            Self.ensureFrameCapacity(chunk.frames.upperBound, in: &content)
+            for channel in 0..<chunks.channelCount {
+                (content.pointer(channel) + chunk.frames.lowerBound).update(from: chunk.content.pointer(channel), count: chunk.frames.count)
+            }
+            frameCount = chunk.frames.upperBound
+        }
+
+        self.content = Self.resized(content, frameCount: frameCount)
+        self.sampleRate = chunks.sampleRate
     }
     
 }
@@ -74,90 +77,8 @@ extension PCMContainer {
 }
 
 
-private extension PCMContainer {
-    
-    /// Decodes audio through `AVAssetReader` and places each buffer on its output timeline.
-    static func decodeTimelineCorrectPCM(
-        from url: URL,
-        sampleRate: Double,
-        channelCount: Int
-    ) async throws -> MultiArray<Float> {
-        let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey : true])
-        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
-        guard let audioTrack = audioTracks.first else { throw ReadError.noAudioTrack }
-        let assetDuration = try await asset.load(.duration)
-        let estimatedFrameCount = Self.outputFrameIndex(for: assetDuration, sampleRate: sampleRate)
-        
-        let useNonInterleavedOutput = channelCount <= 2
-        let outputSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: channelCount,
-            AVLinearPCMBitDepthKey: 32,
-            AVLinearPCMIsFloatKey: true,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: useNonInterleavedOutput,
-        ]
-        
-        let reader = try AVAssetReader(asset: asset)
-        let output = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: outputSettings)
-        output.alwaysCopiesSampleData = false
-        guard reader.canAdd(output) else { throw ReadError.assetReaderError }
-        reader.add(output)
-        guard reader.startReading() else { throw reader.error ?? ReadError.assetReaderError }
-        
-        var content = MultiArray<Float>.zeros(channelCount, max(0, estimatedFrameCount))
-        var decodedFrameCount = 0
-        while let sampleBuffer = output.copyNextSampleBuffer() {
-            let sampleCount = CMSampleBufferGetNumSamples(sampleBuffer)
-            guard sampleCount > 0 else { continue }
-            
-            let trimStart = Self.trimFrameCount(
-                in: sampleBuffer,
-                key: kCMSampleBufferAttachmentKey_TrimDurationAtStart,
-                sampleRate: sampleRate
-            )
-            let trimEnd = Self.trimFrameCount(
-                in: sampleBuffer,
-                key: kCMSampleBufferAttachmentKey_TrimDurationAtEnd,
-                sampleRate: sampleRate
-            )
-            let validRange = Self.decodedSampleRange(
-                sampleCount: sampleCount,
-                trimStart: trimStart,
-                trimEnd: trimEnd
-            )
-            guard validRange.count > 0 else { continue }
-            
-            let presentationTime = CMSampleBufferGetOutputPresentationTimeStamp(sampleBuffer)
-            let startFrame = Self.outputFrameIndex(for: presentationTime, sampleRate: sampleRate)
-            let destinationStart = max(0, startFrame)
-            let clippedLeadingFrameCount = max(0, -startFrame)
-            guard clippedLeadingFrameCount < validRange.count else { continue }
-            
-            let sourceOffset = validRange.startIndex + clippedLeadingFrameCount
-            let copiedFrameCount = validRange.count - clippedLeadingFrameCount
-            let requiredFrameCount = destinationStart + copiedFrameCount
-            Self.ensureFrameCapacity(requiredFrameCount, in: &content)
-            
-            try sampleBuffer.withAudioBufferList(flags: [.audioBufferListAssure16ByteAlignment]) { bufferList, _ in
-                try Self.copySamples(
-                    from: bufferList,
-                    sourceOffset: sourceOffset,
-                    frameCount: copiedFrameCount,
-                    destinationStart: destinationStart,
-                    channelCount: channelCount,
-                    into: &content
-                )
-            }
-            decodedFrameCount = max(decodedFrameCount, requiredFrameCount)
-        }
-        
-        guard reader.status == .completed else { throw reader.error ?? ReadError.assetReaderError }
-        
-        return Self.resized(content, frameCount: decodedFrameCount)
-    }
-    
+extension PCMContainer {
+
     /// Extends decoded storage to contain at least `frameCount` frames, preserving existing samples.
     static func ensureFrameCapacity(_ frameCount: Int, in content: inout MultiArray<Float>) {
         guard frameCount > content.shape[1] else { return }
@@ -215,56 +136,6 @@ private extension PCMContainer {
         let dictionary = unsafeDowncast(attachment, to: CFDictionary.self)
         let time = CMTimeMakeFromDictionary(dictionary)
         return max(0, Self.outputFrameIndex(for: time, sampleRate: sampleRate))
-    }
-    
-    /// Copies a bounded Float32 frame range from a decoded sample buffer into channel-major PCM storage.
-    static func copySamples(
-        from bufferList: UnsafeMutableAudioBufferListPointer,
-        sourceOffset: Int,
-        frameCount: Int,
-        destinationStart: Int,
-        channelCount: Int,
-        into content: inout MultiArray<Float>
-    ) throws {
-        guard bufferList.count > 0 else { throw ReadError.conversionFailed }
-        guard frameCount > 0 else { return }
-        
-        if bufferList.count == channelCount {
-            for channel in 0..<channelCount {
-                guard let source = bufferList[channel].mData?.assumingMemoryBound(to: Float.self) else {
-                    throw ReadError.conversionFailed
-                }
-                _ = memcpy(
-                    content.pointer(channel) + destinationStart,
-                    source + sourceOffset,
-                    frameCount * MemoryLayout<Float>.stride
-                )
-            }
-        } else if bufferList.count == 1 {
-            guard let source = bufferList[0].mData?.assumingMemoryBound(to: Float.self) else {
-                throw ReadError.conversionFailed
-            }
-            if channelCount == 1 {
-                _ = memcpy(
-                    content.pointer(0) + destinationStart,
-                    source + sourceOffset,
-                    frameCount * MemoryLayout<Float>.stride
-                )
-                return
-            }
-            for channel in 0..<channelCount {
-                let destination = content.pointer(channel) + destinationStart
-                var sourceIndex = sourceOffset * channelCount + channel
-                var frame = 0
-                while frame < frameCount {
-                    destination[frame] = source[sourceIndex]
-                    sourceIndex += channelCount
-                    frame += 1
-                }
-            }
-        } else {
-            throw ReadError.conversionFailed
-        }
     }
 }
 
