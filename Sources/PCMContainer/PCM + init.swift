@@ -19,10 +19,10 @@ extension PCMContainer {
         let channelCount = self.channelCount
         guard channelCount > 1 else { return self }
         guard self.content.shape.count > 1 else { return self }
-
+        
         return PCMContainer(content: Self.averagedChannels(self.content), sampleRate: self.sampleRate)
     }
-
+    
     /// Averages the channels of `content`, `(channelCount, frameCount)`, per frame, into `(1, frameCount)`.
     ///
     /// Shared by ``mono()`` and ``Chunks/Chunk/mono()``, so both give identical results.
@@ -30,17 +30,17 @@ extension PCMContainer {
         let channelCount = content.shape[0]
         let frameCount = content.shape[1]
         var result = MultiArray<Float>.zeros(1, frameCount)
-
+        
         for channel in 0..<channelCount {
             vDSP_vadd(result.baseAddress, 1,
                       content.pointer(channel), 1,
                       result.baseAddress, 1,
                       vDSP_Length(frameCount))
         }
-
+        
         let scale = Float(1.0 / Double(channelCount))
         vDSP.multiply(scale, result, result: &result)
-
+        
         return result
     }
     

@@ -52,7 +52,7 @@ extension PCMContainer {
             }
             frameCount = chunk.frames.upperBound
         }
-
+        
         self.content = Self.resized(content, frameCount: frameCount)
         self.sampleRate = chunks.sampleRate
     }
@@ -78,7 +78,7 @@ extension PCMContainer {
 
 
 extension PCMContainer {
-
+    
     /// Extends decoded storage to contain at least `frameCount` frames, preserving existing samples.
     static func ensureFrameCapacity(_ frameCount: Int, in content: inout MultiArray<Float>) {
         guard frameCount > content.shape[1] else { return }
